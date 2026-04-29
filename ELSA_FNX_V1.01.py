@@ -1,7 +1,8 @@
 # Librerías
 import sys
 import os
-import sqlite3
+import firebase_admin
+from firebase_admin import credentials, firestore
 from datetime import datetime, timedelta
 import customtkinter
 from tkinter import messagebox
@@ -16,95 +17,40 @@ else:
 
 # Rutas
 ruta_tema = os.path.join(base_path, "naranja.json")
-db_path = os.path.join(base_path, "fenix.db")
+cred_path = os.path.join(base_path, "firebase-key.json")
 icono_path = os.path.join(base_path, "logo.ico")
 logo_img_path = os.path.join(base_path, "LogoFenixR.png")   # logo para la esquina
 fondo_img_path = os.path.join(base_path, "LogoFenixSR.jpg") # imagen de fondo
+
+# Initialize Firebase
+if not firebase_admin._apps:
+    cred = credentials.Certificate(cred_path)
+    firebase_admin.initialize_app(cred)
+db = firestore.client()
 
 # -------------------------------------------------------
 # Funciones de base de datos
 # -------------------------------------------------------
 def inicializar_base_datos():
-    conexion = sqlite3.connect(db_path)
-    cursor = conexion.cursor()
-    # Tabla con nuevas columnas
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS alumnos (
-        matricula INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
-        nombre TEXT NOT NULL,
-        telefono TEXT,
-        inscripcion TEXT NOT NULL,
-        ultimopago TEXT NOT NULL,
-        proximopago TEXT,
-        fechanacimiento TEXT,
-        telefono_emergencia TEXT,
-        esquema_pago TEXT
-    );
-    """)
-
-    # Por si ya existía una tabla vieja sin columnas nuevas, intentamos agregarlas
-    nuevas_columnas = [
-        ("fechanacimiento", "TEXT"),
-        ("telefono_emergencia", "TEXT"),
-        ("esquema_pago", "TEXT"),
-    ]
-    for nombre_col, tipo_col in nuevas_columnas:
-        try:
-            cursor.execute(f"ALTER TABLE alumnos ADD COLUMN {nombre_col} {tipo_col}")
-        except sqlite3.OperationalError:
-            # La columna ya existe, no pasa nada
-            pass
-
-    conexion.commit()
-    conexion.close()
-    print("Base de datos lista (tabla 'alumnos').")
+    print("Firestore ready.")
 
 
 def consultar_alumnos():
-    conexion = sqlite3.connect(db_path)
-    conexion.row_factory = sqlite3.Row
-    cursor = conexion.cursor()
-    cursor.execute("SELECT * FROM alumnos")
-    filas = cursor.fetchall()
+    docs = db.collection('alumnos').order_by('matricula').get()
     lista = []
-    for fila in filas:
-        s = {
-            'matricula': fila['matricula'],
-            'nombre': fila['nombre'],
-            'telefono': fila['telefono'],
-            'inscripcion': fila['inscripcion'],
-            'ultimopago': fila['ultimopago'],
-            'proximopago': fila['proximopago'],
-            'fechanacimiento': fila['fechanacimiento'] if 'fechanacimiento' in fila.keys() else None,
-            'telefono_emergencia': fila['telefono_emergencia'] if 'telefono_emergencia' in fila.keys() else None,
-            'esquema_pago': fila['esquema_pago'] if 'esquema_pago' in fila.keys() else None,
-        }
-        lista.append(s)
-    cursor.close()
-    conexion.close()
+    for doc in docs:
+        data = doc.to_dict()
+        data['matricula'] = int(doc.id)
+        lista.append(data)
     return lista
 
 
 def obtener_alumno(matricula):
-    conexion = sqlite3.connect(db_path)
-    conexion.row_factory = sqlite3.Row
-    cursor = conexion.cursor()
-    cursor.execute("SELECT * FROM alumnos WHERE matricula=?", (matricula,))
-    fila = cursor.fetchone()
-    cursor.close()
-    conexion.close()
-    if fila:
-        return {
-            'matricula': fila['matricula'],
-            'nombre': fila['nombre'],
-            'telefono': fila['telefono'],
-            'inscripcion': fila['inscripcion'],
-            'ultimopago': fila['ultimopago'],
-            'proximopago': fila['proximopago'],
-            'fechanacimiento': fila['fechanacimiento'] if 'fechanacimiento' in fila.keys() else None,
-            'telefono_emergencia': fila['telefono_emergencia'] if 'telefono_emergencia' in fila.keys() else None,
-            'esquema_pago': fila['esquema_pago'] if 'esquema_pago' in fila.keys() else None,
-        }
+    doc = db.collection('alumnos').document(str(matricula)).get()
+    if doc.exists:
+        data = doc.to_dict()
+        data['matricula'] = int(doc.id)
+        return data
     else:
         return None
 
@@ -502,27 +448,17 @@ class MainWindow:
         # Obtenemos matrícula libre
         matricula_libre = self.obtener_matricula_libre()
 
-        conexion = sqlite3.connect(db_path)
-        cursor = conexion.cursor()
-        cursor.execute("""
-            INSERT INTO alumnos (
-                matricula,
-                nombre,
-                telefono,
-                inscripcion,
-                ultimopago,
-                proximopago,
-                fechanacimiento,
-                telefono_emergencia,
-                esquema_pago
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (matricula_libre, nombre, telefono, inscripcion, ultimopago, proximopago,
-              fechanac if fechanac else None,
-              tel_emerg if tel_emerg else None,
-              esquema))
-        conexion.commit()
-        conexion.close()
+        data = {
+            'nombre': nombre,
+            'telefono': telefono,
+            'inscripcion': inscripcion,
+            'ultimopago': ultimopago,
+            'proximopago': proximopago,
+            'fechanacimiento': fechanac if fechanac else None,
+            'telefono_emergencia': tel_emerg if tel_emerg else None,
+            'esquema_pago': esquema
+        }
+        db.collection('alumnos').document(str(matricula_libre)).set(data)
 
         messagebox.showinfo("Cliente registrado", f"Cliente registrado con matrícula {matricula_libre:04d}")
 
@@ -848,12 +784,7 @@ class MainWindow:
             messagebox.showerror("Error", "Matrícula inválida")
             return
 
-        conexion = sqlite3.connect(db_path)
-        conexion.row_factory = sqlite3.Row
-        cursor = conexion.cursor()
-        cursor.execute("SELECT * FROM alumnos WHERE matricula=?", (matricula,))
-        alumno = cursor.fetchone()
-        conexion.close()
+        alumno = obtener_alumno(int(matricula))
 
         if not alumno:
             messagebox.showerror("Error", "Cliente no encontrado")
@@ -1001,28 +932,16 @@ class MainWindow:
                 messagebox.showerror("Error", "Formato de fecha de próximo pago incorrecto. Use AAAA/MM/DD")
                 return
 
-        conexion = sqlite3.connect(db_path)
-        cursor = conexion.cursor()
-        cursor.execute("""
-            UPDATE alumnos
-            SET nombre=?,
-                telefono=?,
-                ultimopago=?,
-                proximopago=?,
-                fechanacimiento=?,
-                telefono_emergencia=?,
-                esquema_pago=?
-            WHERE matricula=?
-        """, (nombre,
-              telefono,
-              ultimopago,
-              proximopago,
-              fechanac if fechanac else None,
-              tel_emerg if tel_emerg else None,
-              esquema,
-              matricula))
-        conexion.commit()
-        conexion.close()
+        data = {
+            'nombre': nombre,
+            'telefono': telefono,
+            'ultimopago': ultimopago,
+            'proximopago': proximopago,
+            'fechanacimiento': fechanac if fechanac else None,
+            'telefono_emergencia': tel_emerg if tel_emerg else None,
+            'esquema_pago': esquema
+        }
+        db.collection('alumnos').document(str(matricula)).update(data)
         messagebox.showinfo("Actualizado", f"Cliente {matricula} actualizado correctamente")
 
     # ---------------------------------------------
@@ -1129,11 +1048,7 @@ class MainWindow:
         if not confirm:
             return
 
-        conexion = sqlite3.connect(db_path)
-        cursor = conexion.cursor()
-        cursor.execute("DELETE FROM alumnos WHERE matricula=?", (matricula,))
-        conexion.commit()
-        conexion.close()
+        db.collection('alumnos').document(str(matricula)).delete()
 
         messagebox.showinfo("Eliminado", f"Cliente {alumno['nombre']} eliminado correctamente")
         self.setings_gui()
@@ -1153,18 +1068,12 @@ class MainWindow:
                 pass
 
     def obtener_matricula_libre(self):
-        conexion = sqlite3.connect(db_path)
-        cursor = conexion.cursor()
-        cursor.execute("SELECT matricula FROM alumnos ORDER BY matricula ASC")
-        filas = cursor.fetchall()
-        conexion.close()
-
+        docs = db.collection('alumnos').order_by('__name__').get()
+        matriculas = [int(doc.id) for doc in docs]
         matricula = 1
-        for fila in filas:
-            if fila[0] != matricula:
-                return matricula  # hueco encontrado
+        while matricula in matriculas:
             matricula += 1
-        return matricula  # si no hay huecos, retorna el siguiente disponible
+        return matricula
 
 # -------------------------------------------------------
 # Loop principal con CANVAS como fondo
