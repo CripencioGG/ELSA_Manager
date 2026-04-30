@@ -36,12 +36,17 @@ def inicializar_base_datos():
 
 
 def consultar_alumnos():
-    docs = db.collection('alumnos').order_by('matricula').get()
+    docs = db.collection('alumnos').get()
     lista = []
+
     for doc in docs:
         data = doc.to_dict()
         data['matricula'] = int(doc.id)
         lista.append(data)
+
+    # ordenar por matrícula (funciona si usa 0001, 0002, etc.)
+    lista.sort(key=lambda x: x['matricula'])
+
     return lista
 
 
@@ -53,7 +58,56 @@ def obtener_alumno(matricula):
         return data
     else:
         return None
+    
+def parsear_fecha(fecha_str):
+    if not fecha_str:
+        return None
 
+    formatos = [
+        "%d/%m/%Y",
+        "%d-%m-%Y",
+        "%d %m %Y",
+        "%Y-%m-%d",
+        "%Y/%m/%d"
+    ]
+
+    for fmt in formatos:
+        try:
+            return datetime.strptime(fecha_str, fmt)
+        except ValueError:
+            continue
+
+    return None
+
+
+def a_iso(fecha_str):
+    fecha = parsear_fecha(fecha_str)
+    return fecha.strftime("%Y-%m-%d") if fecha else None
+
+
+def a_display(fecha_iso):
+    if not fecha_iso:
+        return ""
+    fecha = parsear_fecha(fecha_iso)
+    return fecha.strftime("%d/%m/%Y") if fecha else fecha_iso
+
+def formatear_fecha(fecha_iso):
+    if not fecha_iso:
+        return ""
+
+    formatos = [
+        "%Y-%m-%d",  # 2026-04-29
+        "%Y/%m/%d",  # 2026/04/29
+    ]
+
+    for fmt in formatos:
+        try:
+            fecha = datetime.strptime(fecha_iso, fmt)
+            return fecha.strftime("%d/%m/%Y")
+        except ValueError:
+            continue
+
+    return fecha_iso  # fallback
 # -------------------------------------------------------
 # Clase principal
 # -------------------------------------------------------
@@ -330,7 +384,7 @@ class MainWindow:
 
         self.main_fechanac = customtkinter.CTkEntry(
             self.main_frame,
-            placeholder_text='Fecha de nacimiento AAAA/MM/DD',
+            placeholder_text='Fecha de nacimiento DD MM AAAA',
             font=("Roboto", 40)
         )
         self.main_fechanac.pack(fill="both", expand=True)
@@ -363,7 +417,7 @@ class MainWindow:
 
         self.main_inscripcionllenar = customtkinter.CTkEntry(
             self.main_frame,
-            placeholder_text='Fecha de inscripción AAAA/MM/DD',
+            placeholder_text='Fecha de inscripción DD MM AAAA',
             font=("Roboto", 40)
         )
         self.main_inscripcionllenar.pack(fill="both", expand=True)
@@ -414,38 +468,42 @@ class MainWindow:
         fechanac = self.main_fechanac.get().strip()
         tel_emerg = self.main_tel_emerg.get().strip()
         esquema = self.main_esquema.get()
-        inscripcion = self.main_inscripcionllenar.get().strip()
+        inscripcion_input = self.main_inscripcionllenar.get().strip()
 
-        if not nombre or not inscripcion:
+        if not nombre or not inscripcion_input:
             messagebox.showerror("Error", "Nombre e inscripción son obligatorios")
             return
 
-        # Validar fecha de inscripción
-        try:
-            fecha_ins = datetime.strptime(inscripcion, "%Y/%m/%d")
-        except ValueError:
-            messagebox.showerror("Error", "Formato de fecha de inscripción incorrecto. Use AAAA/MM/DD")
+        # fecha inscripción
+        fecha_ins = parsear_fecha(inscripcion_input)
+        if not fecha_ins:
+            messagebox.showerror("Error", "Formato de fecha inválido")
             return
 
-        # Validar fecha de nacimiento si se ingresó
-        if fechanac:
-            try:
-                datetime.strptime(fechanac, "%Y/%m/%d")
-            except ValueError:
-                messagebox.showerror("Error", "Formato de fecha de nacimiento incorrecto. Use AAAA/MM/DD")
-                return
+        inscripcion = fecha_ins.strftime("%Y-%m-%d")
 
-        # Calcular próximo pago según esquema
+        # fecha nacimiento
+        if fechanac:
+            fecha_nac_dt = parsear_fecha(fechanac)
+            if not fecha_nac_dt:
+                messagebox.showerror("Error", "Formato de fecha de nacimiento inválido")
+                return
+            fechanac = fecha_nac_dt.strftime("%Y-%m-%d")
+        else:
+            fechanac = None
+
+        # Calcular próximo pago
         if esquema == "Semanal":
             dias = 7
         elif esquema == "Quincenal":
             dias = 15
         else:
             dias = 30
+
         ultimopago = inscripcion
-        proximopago = (fecha_ins + timedelta(days=dias)).strftime("%Y/%m/%d")
-        
-        # Obtenemos matrícula libre
+        proximopago = (fecha_ins + timedelta(days=dias)).strftime("%Y-%m-%d")
+
+        # matrícula
         matricula_libre = self.obtener_matricula_libre()
 
         data = {
@@ -454,14 +512,19 @@ class MainWindow:
             'inscripcion': inscripcion,
             'ultimopago': ultimopago,
             'proximopago': proximopago,
-            'fechanacimiento': fechanac if fechanac else None,
+            'fechanacimiento': fechanac,
             'telefono_emergencia': tel_emerg if tel_emerg else None,
             'esquema_pago': esquema
         }
+
         db.collection('alumnos').document(str(matricula_libre)).set(data)
 
-        messagebox.showinfo("Cliente registrado", f"Cliente registrado con matrícula {matricula_libre:04d}")
+        messagebox.showinfo(
+            "Cliente registrado",
+            f"Cliente registrado con matrícula {matricula_libre:04d}"
+        )
 
+        # limpiar campos
         self.main_nombrellenar.delete(0, "end")
         self.main_telefono.delete(0, "end")
         self.main_fechanac.delete(0, "end")
@@ -520,12 +583,26 @@ class MainWindow:
         self.pagina_actual = 0
         self.mostrar_tabla_paginada_consulta()
 
+        self.gui_elements = [
+            self.top_frame,
+            self.logo,
+            self.main_label_1,
+            self.bottom_frame,
+            self.main_boton_volver,
+            self.frame_tabla,
+            self.btn_anterior,
+            self.btn_siguiente
+        ]
+
+
     # ---------------------------------------------
     # Función paginación en interfaz de consulta
     # ---------------------------------------------
     def mostrar_tabla_paginada_consulta(self):
         for widget in self.frame_tabla.winfo_children():
             widget.destroy()
+
+        self.registros_por_pagina = 5
 
         alumnos = consultar_alumnos()
         total = len(alumnos)
@@ -547,13 +624,14 @@ class MainWindow:
                 f"{alumno['matricula']:04d}",
                 alumno['nombre'],
                 alumno['telefono'] or "",
-                alumno['inscripcion'],
-                alumno['ultimopago'],
-                alumno['proximopago'],
-                alumno['fechanacimiento'] or "",
-                alumno['telefono_emergencia'] or "",
-                alumno['esquema_pago'] or "",
+                a_display(alumno.get('inscripcion')),
+                a_display(alumno.get('ultimopago')),
+                a_display(alumno.get('proximopago')),
+                a_display(alumno.get('fechanacimiento')),
+                alumno.get('telefono_emergencia') or "",
+                alumno.get('esquema_pago') or "",
             ]
+            
             for col_idx, val in enumerate(valores):
                 lbl = customtkinter.CTkLabel(self.frame_tabla, text=val, font=("Roboto", 18))
                 lbl.grid(row=fila_idx, column=col_idx, padx=5, pady=5)
@@ -566,15 +644,6 @@ class MainWindow:
         self.btn_anterior.configure(state="normal" if self.pagina_actual > 0 else "disabled")
         self.btn_siguiente.configure(state="normal" if fin < total else "disabled")
 
-        self.gui_elements = [
-            self.top_frame,
-            self.bottom_frame,
-            self.frame_tabla,
-            self.logo,
-            self.main_label_1,
-            self.main_boton_volver
-        ]
-
     def pagina_siguiente_consulta(self):
         self.pagina_actual += 1
         self.mostrar_tabla_paginada_consulta()
@@ -582,8 +651,8 @@ class MainWindow:
     def pagina_anterior_consulta(self):
         if self.pagina_actual > 0:
             self.pagina_actual -= 1
-            self.mostrar_tabla_paginada_consulta()
-
+            self.mostrar_tabla_paginada_consulta()        
+            
     # ---------------------------------------------
     # Mostrar datos de un Cliente por matrícula (con confirmación)
     # ---------------------------------------------
@@ -660,12 +729,12 @@ class MainWindow:
             f"{alumno['matricula']:04d}",
             alumno['nombre'],
             alumno['telefono'] or "",
-            alumno['fechanacimiento'] or "",
+            formatear_fecha(alumno['fechanacimiento']) if alumno['fechanacimiento'] else "", 
             alumno['telefono_emergencia'] or "",
-            alumno['inscripcion'],
+            formatear_fecha(alumno['inscripcion']),            
             alumno['esquema_pago'] or "",
-            alumno['ultimopago'],
-            alumno['proximopago'],
+            formatear_fecha(alumno['ultimopago']),
+            formatear_fecha(alumno['proximopago']),
         ]
 
         for idx, (etq, val) in enumerate(zip(etiquetas, valores)):
@@ -904,45 +973,80 @@ class MainWindow:
 
 
     def guardar_cambios(self, matricula):
+        matricula = str(int(matricula.strip()))
+
+        # Obtener alumno original
+        alumno_original = obtener_alumno(int(matricula))
+
         nombre = self.entry_nombre.get().strip()
         telefono = self.entry_telefono.get().strip()
-        fechanac = self.entry_fechanac.get().strip()
+        inscripcion_input = self.entry_inscripcion.get().strip()
+        fechanac_input = self.entry_fechanac.get().strip()
         tel_emerg = self.entry_tel_emerg.get().strip()
-        ultimopago = self.entry_ultimopago.get().strip()
-        proximopago = self.entry_proximopago.get().strip()
+        ultimopago_input = self.entry_ultimopago.get().strip()
+        proximopago_input = self.entry_proximopago.get().strip()
         esquema = self.menu_esquema.get()
 
-        # Validar formato de fechas si vienen
-        if fechanac:
-            try:
-                datetime.strptime(fechanac, "%Y/%m/%d")
-            except ValueError:
-                messagebox.showerror("Error", "Formato de fecha de nacimiento incorrecto. Use AAAA/MM/DD")
-                return
-        if ultimopago:
-            try:
-                datetime.strptime(ultimopago, "%Y/%m/%d")
-            except ValueError:
-                messagebox.showerror("Error", "Formato de fecha de último pago incorrecto. Use AAAA/MM/DD")
-                return
-        if proximopago:
-            try:
-                datetime.strptime(proximopago, "%Y/%m/%d")
-            except ValueError:
-                messagebox.showerror("Error", "Formato de fecha de próximo pago incorrecto. Use AAAA/MM/DD")
+        # Convertir fechas a ISO
+        inscripcion = a_iso(inscripcion_input)
+        fechanac = a_iso(fechanac_input)
+        ultimopago = a_iso(ultimopago_input)
+        proximopago = a_iso(proximopago_input)
+
+        #validaciones
+        if inscripcion_input and not inscripcion:
+            messagebox.showerror("Error", "Fecha de inscripción inválida")
+            return
+        if fechanac_input and not fechanac:
+            messagebox.showerror("Error", "Fecha de nacimiento inválida")
+            return
+        if ultimopago_input and not ultimopago:
+            messagebox.showerror("Error", "Fecha de último pago inválida")
+            return
+        if proximopago_input and not proximopago:
+            messagebox.showerror("Error", "Fecha de próximo pago inválida")
+            return
+
+        #detectar cambio en inscripción
+        inscripcion_original = alumno_original.get("inscripcion")
+
+        if inscripcion and inscripcion_original and inscripcion != inscripcion_original:
+            confirmar = messagebox.askyesno(
+                "Confirmar cambio",
+                f"Vas a cambiar la fecha de inscripción:\n\n"
+                f"Antes: {a_display(inscripcion_original)}\n"
+                f"Ahora: {a_display(inscripcion)}\n\n"
+                f"¿Deseas continuar?"
+            )
+            if not confirmar:
                 return
 
+        #data final
         data = {
             'nombre': nombre,
             'telefono': telefono,
+            'inscripcion': inscripcion,
             'ultimopago': ultimopago,
             'proximopago': proximopago,
-            'fechanacimiento': fechanac if fechanac else None,
+            'fechanacimiento': fechanac,
             'telefono_emergencia': tel_emerg if tel_emerg else None,
             'esquema_pago': esquema
         }
-        db.collection('alumnos').document(str(matricula)).update(data)
-        messagebox.showinfo("Actualizado", f"Cliente {matricula} actualizado correctamente")
+
+        # limpiar
+        data = {k: v for k, v in data.items() if v is not None}
+
+        try:
+            db.collection('alumnos').document(matricula).set(data, merge=True)
+
+            messagebox.showinfo(
+                "Actualizado",
+                f"Cliente {int(matricula):04d} actualizado correctamente"
+            )
+
+        except Exception as e:
+            print("ERROR:", e)
+            messagebox.showerror("Error", str(e))
 
     # ---------------------------------------------
     # Ventana Eliminar Cliente
@@ -1043,7 +1147,7 @@ class MainWindow:
 
         confirm = messagebox.askyesno(
             "Confirmar eliminación",
-            f"¿Seguro que desea eliminar al alumno {alumno['nombre']} (Matrícula {matricula:04d})?"
+            f"¿Seguro que desea eliminar al cliente {alumno['nombre']} (Matrícula {matricula:04d})?"
         )
         if not confirm:
             return
@@ -1074,6 +1178,7 @@ class MainWindow:
         while matricula in matriculas:
             matricula += 1
         return matricula
+
 
 # -------------------------------------------------------
 # Loop principal con CANVAS como fondo
